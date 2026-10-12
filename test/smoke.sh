@@ -72,7 +72,10 @@ EOF
 docker volume create "$volume" >/dev/null
 docker run --rm --user 0 -v "$volume:/var/lib/ldap" --entrypoint chown "$image" 911:911 /var/lib/ldap
 
+# The open-files limit a container gets under containerd; the image has to
+# cope with it (slapd-wrapper).
 mounts=(--read-only
+  --ulimit nofile=1048576:1048576
   --tmpfs /etc/ldap/slapd.d:uid=911,gid=911,mode=750
   --tmpfs /run/slapd:uid=911,gid=911
   -v "$volume:/var/lib/ldap"
@@ -95,6 +98,9 @@ for _ in $(seq 1 30); do
 done
 
 [[ $(docker exec "$name" id -u) == 911 ]] || fail "slapd does not run as uid 911"
+
+rss=$(docker exec "$name" awk '/VmRSS/ {print $2}' /proc/1/status)
+((rss < 102400)) || fail "slapd takes $((rss / 1024)) MB right after the start"
 
 search -H ldap://localhost:1389 -s base -b "" namingContexts | grep -q "namingContexts: $base" ||
   fail "the root DSE is not readable anonymously"

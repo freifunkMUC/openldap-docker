@@ -1,0 +1,11 @@
+#!/bin/sh
+# slapd sizes its tables by the limit of open files. Container runtimes hand
+# out a million or more (1048576 under containerd), and slapd then takes
+# about 350 MB before the first client connects. 16384 is more connections
+# than a single slapd usually serves and costs about 20 MB.
+max=16384
+cur=$(ulimit -n)
+if [ "$cur" = unlimited ] || [ "$cur" -gt "$max" ]; then
+  ulimit -n "$max"
+fi
+exec /usr/sbin/slapd "$@"

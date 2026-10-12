@@ -4,10 +4,12 @@ A container image of [OpenLDAP](https://www.openldap.org/) (`slapd`) that is the
 
 Most OpenLDAP images wrap the server in a startup script that generates the configuration from environment variables. Those wrappers are the part that gets abandoned. This image has none: you give `slapd` its configuration as a file, the way its own documentation describes, and it runs.
 
+The one thing the image does for you is cap the limit of open files at 16384. `slapd` sizes its tables by that limit, and with the 1048576 that containerd hands out it takes about 350 MB of memory at start instead of 20. `slapd` on the `PATH` is a [ten-line wrapper](slapd-wrapper) that does this and then starts `/usr/sbin/slapd` with the same arguments.
+
 - Debian 13 (trixie) with the packages `slapd` and `ldap-utils`, rebuilt every week for security updates.
 - Runs as user and group `911`, with a read-only root filesystem if you like.
 - Listens on `1389` (LDAP) and `1636` (LDAPS).
-- No environment variables, no entrypoint script.
+- No environment variables, no generated configuration.
 
 ## Tags
 
