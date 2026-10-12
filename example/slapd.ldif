@@ -1,0 +1,74 @@
+# A complete configuration of slapd (cn=config) for one directory,
+# dc=example,dc=org. Load it into an empty /etc/ldap/slapd.d with
+#   slapadd -n0 -F /etc/ldap/slapd.d -l slapd.ldif
+# The data directory must be mounted while you do: slapadd checks that
+# olcDbDirectory exists.
+dn: cn=config
+objectClass: olcGlobal
+cn: config
+olcPidFile: /run/slapd/slapd.pid
+olcArgsFile: /run/slapd/slapd.args
+# slapd reads the certificate only at start: restart it after a renewal.
+olcTLSCertificateFile: /tls/tls.crt
+olcTLSCertificateKeyFile: /tls/tls.key
+olcTLSProtocolMin: 3.3
+
+dn: cn=module{0},cn=config
+objectClass: olcModuleList
+cn: module{0}
+olcModulePath: /usr/lib/ldap
+olcModuleLoad: back_mdb
+
+dn: cn=schema,cn=config
+objectClass: olcSchemaConfig
+cn: schema
+
+# Schemas of the Debian package. Add your own the same way.
+include: file:///etc/ldap/schema/core.ldif
+include: file:///etc/ldap/schema/cosine.ldif
+include: file:///etc/ldap/schema/nis.ldif
+include: file:///etc/ldap/schema/inetorgperson.ldif
+
+dn: olcDatabase={-1}frontend,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcFrontendConfig
+olcDatabase: {-1}frontend
+# What a client needs before it can bind: the root DSE and the schema.
+olcAccess: {0}to dn.base="" by * read
+olcAccess: {1}to dn.base="cn=Subschema" by * read
+olcAccess: {2}to * by * none
+
+# Nobody edits the configuration at runtime: it is loaded from this file.
+dn: olcDatabase={0}config,cn=config
+objectClass: olcDatabaseConfig
+olcDatabase: {0}config
+olcAccess: {0}to * by * none
+
+# No olcRootPW: the root DN binds with the userPassword of its own entry in
+# the directory, so this file holds no secret.
+dn: olcDatabase={1}mdb,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcMdbConfig
+olcDatabase: {1}mdb
+olcDbDirectory: /var/lib/ldap
+olcSuffix: dc=example,dc=org
+olcRootDN: cn=admin,dc=example,dc=org
+olcDbMaxSize: 1073741824
+olcDbIndex: objectClass eq
+olcDbIndex: entryUUID eq
+olcDbIndex: entryCSN eq
+olcDbIndex: cn eq
+olcDbIndex: uid eq
+olcDbIndex: mail eq,sub
+olcDbIndex: memberUid eq
+# Passwords: the owner may change his, anyone may try to log in with it,
+# nobody reads the hash.
+olcAccess: {0}to attrs=userPassword,shadowLastChange
+  by self write
+  by anonymous auth
+  by * none
+# Everything else is for those who have logged in.
+olcAccess: {1}to *
+  by self write
+  by users read
+  by * none

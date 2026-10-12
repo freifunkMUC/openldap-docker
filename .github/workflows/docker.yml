@@ -1,0 +1,97 @@
+name: docker
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Every Monday, so that security updates of the Debian packages reach
+    # the image without a change in this repository.
+    - cron: "0 5 * * 1"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    permissions:
+      packages: write
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      # Built once for the runner and tested before anything is pushed. The
+      # scheduled build ignores the cache: a cached "apt-get install" layer
+      # would carry last week's packages.
+      - name: Build for the test
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          tags: openldap:test
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Smoke test
+        run: test/smoke.sh openldap:test
+
+      # Tags follow the version of slapd in the image, e.g. 2.6.10 from the
+      # Debian version 2.6.10+dfsg-1.
+      - name: Version of slapd
+        id: version
+        run: |
+          debian=$(docker run --rm --entrypoint dpkg-query openldap:test -W -f '${Version}' slapd)
+          echo "debian=$debian" >> "$GITHUB_OUTPUT"
+          echo "slapd=${debian%%+*}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # <version> and latest move with every rebuild, <version>-<date>
+          # stays on the build of that day.
+          tags: |
+            type=raw,value=${{ steps.version.outputs.slapd }}
+            type=raw,value=${{ steps.version.outputs.slapd }}-${{ steps.version.outputs.date }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=OpenLDAP
+            org.opencontainers.image.description=slapd ${{ steps.version.outputs.debian }} from Debian, without startup scripts
+            org.opencontainers.image.version=${{ steps.version.outputs.slapd }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.licenses=MIT AND OLDAP-2.8
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request' && github.ref_name == 'main'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The layers of the tested build come from the builder's cache; only
+      # the second architecture is built here.
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' && github.ref_name == 'main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
