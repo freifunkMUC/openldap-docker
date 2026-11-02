@@ -2,7 +2,7 @@
 # variables, no startup logic beyond one limit (slapd-wrapper). slapd reads cn=config
 # from /etc/ldap/slapd.d and keeps its data in /var/lib/ldap; whoever runs
 # the container fills both. See README.md.
-FROM docker.io/library/debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+FROM docker.io/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
 # The package takes over a user "openldap" that already exists. Fixed ids,
 # so that a volume keeps its owner whatever the package would have picked.
