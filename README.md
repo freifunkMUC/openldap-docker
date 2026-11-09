@@ -23,7 +23,7 @@ The one thing the image does for you is cap the limit of open files at 16384. `s
 | `sha-1a2b3c4` | the build of that commit of this repository |
 | `latest` | the newest build |
 
-A daily job checks the published image: it is rebuilt without cache and pushed only if `apt-get upgrade` would change packages in it or the pinned Debian base image is newer than the one it was built from (label `org.opencontainers.image.base.digest`). Otherwise the digest stays the same. A change to the `Dockerfile`, `slapd-wrapper` or the workflow publishes on merge.
+A daily job checks the published image: it is rebuilt without cache and pushed only if `apt-get upgrade` would change packages in it or the pinned Debian base image is newer than the one it was built from (label `org.opencontainers.image.base.digest`). Otherwise the digest stays the same. A second daily job ([`upstream-watch`](.github/workflows/upstream-watch.yml)) opens an issue for each new OpenLDAP release upstream and for each open Debian trixie CVE of the package, so that a release that Debian does not ship yet is visible; it builds nothing. A change to the `Dockerfile`, `slapd-wrapper` or the workflow publishes on merge.
 
 Pin a digest if you want to decide yourself when an update arrives.
 
