@@ -10,6 +10,7 @@ FROM docker.io/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5
 RUN groupadd --system --gid 911 openldap \
  && useradd --system --uid 911 --gid 911 --home-dir /var/lib/ldap --no-create-home --shell /usr/sbin/nologin openldap \
  && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends slapd ldap-utils \
  && rm -rf /var/lib/apt/lists/* /etc/ldap/slapd.d /var/lib/ldap /run/slapd \
  && install -d -o openldap -g openldap -m 0750 /etc/ldap/slapd.d /var/lib/ldap /run/slapd
