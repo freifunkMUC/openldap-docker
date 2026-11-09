@@ -1,24 +1,129 @@
 name: docker
 
+# Pull requests and pushes: build and smoke test; pushes to main publish the
+# image if its inputs changed. A daily run rebuilds without cache and
+# publishes only if the published image has pending Debian package upgrades
+# or the pinned base image changed since it was built. Otherwise the digest
+# of the published tags stays as it is.
+
 on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and publish even if nothing changed
+        required: false
+        type: boolean
+        default: false
   schedule:
-    # Every Monday, so that security updates of the Debian packages reach
-    # the image without a change in this repository.
-    - cron: "0 5 * * 1"
+    # Not at minute 0: GitHub delays or drops scheduled runs at the start of
+    # the hour.
+    - cron: "17 4 * * *"
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
-    permissions:
-      packages: write
-      contents: read
+  decide:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      push: ${{ steps.decide.outputs.push }}
+      no_cache: ${{ steps.decide.outputs.no_cache }}
+      base_name: ${{ steps.decide.outputs.base_name }}
+      base_digest: ${{ steps.decide.outputs.base_digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          FORCE: ${{ inputs.force }}
+          BEFORE: ${{ github.event.before }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          # The base image the Dockerfile builds from, and its digest.
+          base_ref=$(sed -n 's/^FROM \([^ ]*\).*/\1/p' Dockerfile | head -n1)
+          base_digest=${base_ref##*@}
+          base_name=${base_ref%@*}
+          case "$base_digest" in sha256:*) ;; *) echo "FROM is not pinned by digest: $base_ref" >&2; exit 1 ;; esac
+          build=true push=false no_cache=false
+
+          case "$EVENT" in
+            pull_request)
+              ;;
+            push)
+              if [ "$REF_NAME" = main ]; then
+                inputs=(Dockerfile slapd-wrapper .github/workflows/docker.yml)
+                if [ -z "${BEFORE//0/}" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+                   || ! git diff --quiet "$BEFORE" "$GITHUB_SHA" -- "${inputs[@]}"; then
+                  push=true
+                else
+                  echo "Inputs of the image unchanged: test only, no publish"
+                fi
+              fi
+              ;;
+            workflow_dispatch | schedule)
+              no_cache=true
+              if [ "$FORCE" = true ]; then
+                echo "Forced"
+                push=true
+              else
+                # Published image: pending upgrades inside it, and the base
+                # image it was built from.
+                if ! out=$(docker pull --quiet --platform linux/amd64 "$IMAGE:latest" 2>&1); then
+                  if grep -qiE 'not found|manifest unknown' <<< "$out"; then
+                    echo "Nothing published yet"
+                    push=true
+                  else
+                    echo "Cannot pull $IMAGE:latest: $out" >&2
+                    exit 1
+                  fi
+                else
+                  # A failing "apt-get update" or "docker run" must not look like "nothing pending".
+                  upgrade=$(docker run --rm --platform linux/amd64 --user 0 --entrypoint bash "$IMAGE:latest" \
+                    -c 'apt-get -qq --error-on=any update >/dev/null && apt-get -s upgrade') || exit 1
+                  pending=$(grep -c '^Inst ' <<< "$upgrade" || true)
+                  built_from=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.base.digest" }}' "$IMAGE:latest")
+                  echo "Pending upgrades: $pending"
+                  echo "Base digest: published ${built_from:-none}, Dockerfile $base_digest"
+                  if [ "$pending" -gt 0 ] || [ "$built_from" != "$base_digest" ]; then
+                    push=true
+                  else
+                    echo "up to date"
+                  fi
+                fi
+              fi
+              [ "$push" = true ] || build=false
+              ;;
+          esac
+
+          {
+            echo "build=$build"
+            echo "push=$push"
+            echo "no_cache=$no_cache"
+            echo "base_name=$base_name"
+            echo "base_digest=$base_digest"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: decide
+    if: needs.decide.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      slapd: ${{ steps.version.outputs.slapd }}
+      debian: ${{ steps.version.outputs.debian }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,16 +134,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # Built once for the runner and tested before anything is pushed. The
-      # scheduled build ignores the cache: a cached "apt-get install" layer
-      # would carry last week's packages.
+      # Built once for the runner and tested before anything is pushed. A
+      # scheduled or manual build ignores the cache: a cached "apt-get
+      # install" layer would carry old packages. Its layers go into the cache
+      # for the publish job.
       - name: Build for the test
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           load: true
           tags: openldap:test
-          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          no-cache: ${{ needs.decide.outputs.no_cache == 'true' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
@@ -54,6 +160,56 @@ jobs:
           debian=$(docker run --rm --entrypoint dpkg-query openldap:test -W -f '${Version}' slapd)
           echo "debian=$debian" >> "$GITHUB_OUTPUT"
           echo "slapd=${debian%%+*}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: [decide, build]
+    if: needs.decide.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # Two runs probing the same -rN would overwrite each other's tag.
+    concurrency:
+      group: publish
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The first unused <version>-rN, found by asking the registry. Only a
+      # "not found" answer means the tag is free; any other error fails the
+      # job rather than risk overwriting an immutable tag.
+      - name: Rebuild number
+        id: rebuild
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          SLAPD: ${{ needs.build.outputs.slapd }}
+        run: |
+          n=1
+          while true; do
+            if out=$(docker buildx imagetools inspect "$IMAGE:$SLAPD-r$n" 2>&1); then
+              n=$((n + 1))
+            elif grep -qiE 'not found|manifest unknown' <<< "$out"; then
+              break
+            else
+              echo "Cannot probe $IMAGE:$SLAPD-r$n: $out" >&2
+              exit 1
+            fi
+          done
+          echo "n=$n" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta
@@ -61,26 +217,24 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # <version> and latest move with every rebuild, <version>-<date>
-          # stays on the build of that day.
+          # <version>, latest and <version>-<date> move with every rebuild
+          # (the last one to the last build of that day); <version>-rN and
+          # sha-<commit> stay.
           tags: |
-            type=raw,value=${{ steps.version.outputs.slapd }}
-            type=raw,value=${{ steps.version.outputs.slapd }}-${{ steps.version.outputs.date }}
+            type=raw,value=${{ needs.build.outputs.slapd }}
+            type=raw,value=${{ needs.build.outputs.slapd }}-r${{ steps.rebuild.outputs.n }}
+            type=raw,value=${{ needs.build.outputs.slapd }}-${{ steps.rebuild.outputs.date }}
             type=raw,value=latest
+            type=sha,format=short
           labels: |
             org.opencontainers.image.title=OpenLDAP
-            org.opencontainers.image.description=slapd ${{ steps.version.outputs.debian }} from Debian, without startup scripts
-            org.opencontainers.image.version=${{ steps.version.outputs.slapd }}
+            org.opencontainers.image.description=slapd ${{ needs.build.outputs.debian }} from Debian, without startup scripts
+            org.opencontainers.image.version=${{ needs.build.outputs.slapd }}
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.licenses=MIT AND OLDAP-2.8
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request' && github.ref_name == 'main'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+            org.opencontainers.image.base.name=${{ needs.decide.outputs.base_name }}
+            org.opencontainers.image.base.digest=${{ needs.decide.outputs.base_digest }}
 
       # The layers of the tested build come from the builder's cache; only
       # the second architecture is built here.
@@ -89,7 +243,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' && github.ref_name == 'main' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

@@ -6,7 +6,7 @@ Most OpenLDAP images wrap the server in a startup script that generates the conf
 
 The one thing the image does for you is cap the limit of open files at 16384. `slapd` sizes its tables by that limit, and with the 1048576 that containerd hands out it takes about 350 MB of memory at start instead of 20. `slapd` on the `PATH` is a [ten-line wrapper](slapd-wrapper) that does this and then starts `/usr/sbin/slapd` with the same arguments.
 
-- Debian 13 (trixie) with the packages `slapd` and `ldap-utils`, rebuilt every week for security updates.
+- Debian 13 (trixie) with the packages `slapd` and `ldap-utils`, rebuilt when the base image or its packages have security updates (checked daily).
 - Runs as user and group `911`, with a read-only root filesystem if you like.
 - Listens on `1389` (LDAP) and `1636` (LDAPS).
 - No environment variables, no generated configuration.
@@ -17,9 +17,13 @@ The one thing the image does for you is cap the limit of open files at 16384. `s
 
 | Tag | Meaning |
 |---|---|
-| `2.6.10` | the version of `slapd` in the image; moves with every weekly rebuild |
-| `2.6.10-20261013` | the build of that day |
+| `2.6.10` | the version of `slapd` in the image; moves with every rebuild |
+| `2.6.10-r3` | one rebuild, never moves; the number counts up per `slapd` version |
+| `2.6.10-20261013` | the last build of that day |
+| `sha-1a2b3c4` | the build of that commit of this repository |
 | `latest` | the newest build |
+
+A daily job checks the published image: it is rebuilt without cache and pushed only if `apt-get upgrade` would change packages in it or the pinned Debian base image is newer than the one it was built from (label `org.opencontainers.image.base.digest`). Otherwise the digest stays the same. A change to the `Dockerfile`, `slapd-wrapper` or the workflow publishes on merge.
 
 Pin a digest if you want to decide yourself when an update arrives.
 
