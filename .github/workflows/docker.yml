@@ -51,6 +51,7 @@ jobs:
           BEFORE: ${{ github.event.before }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         run: |
+          IMAGE="${IMAGE,,}"  # registry names are lowercase
           # The base image the Dockerfile builds from, and its digest.
           base_ref=$(sed -n 's/^FROM \([^ ]*\).*/\1/p' Dockerfile | head -n1)
           base_digest=${base_ref##*@}
@@ -198,6 +199,7 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           SLAPD: ${{ needs.build.outputs.slapd }}
         run: |
+          IMAGE="${IMAGE,,}"  # registry names are lowercase
           n=1
           while true; do
             if out=$(docker buildx imagetools inspect "$IMAGE:$SLAPD-r$n" 2>&1); then
